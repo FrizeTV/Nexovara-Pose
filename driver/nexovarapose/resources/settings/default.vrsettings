@@ -1,0 +1,14 @@
+{
+	"driver_nexovarapose": {
+		"enable": true,
+		"port": 39580,
+		"enableHmd": false,
+		"window_x": 0,
+		"window_y": 0,
+		"window_width": 1600,
+		"window_height": 900,
+		"render_width": 0,
+		"render_height": 0,
+		"vertical_fov": 90
+	}
+}

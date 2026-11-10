@@ -1,0 +1,15 @@
+# Запасной способ узнать позу шлема SteamVR (обычно её сообщает драйвер Nexovara Pose)
+openvr>=1.26,<3
+# Вторая нейросеть RTMPose (уточнение суставов). На Windows — onnxruntime-directml
+# (любая видеокарта: NVIDIA, AMD, Intel), на других системах — onnxruntime.
+# Ставьте ТОЛЬКО один из них: оба дают модуль onnxruntime и мешают друг другу.
+onnxruntime-directml>=1.20,<2; sys_platform == "win32"
+onnxruntime>=1.20,<2; sys_platform != "win32"
+# Поза шлема из VRChat (OSCQuery: объявление Nexovara Pose для VRChat через mDNS)
+zeroconf>=0.130,<1
+# Для запуска тестов (onnx — только для теста с искусственной моделью)
+pytest>=7
+python-osc>=1.8
+onnx>=1.15
+# Для сборки .exe
+pyinstaller>=6,<7

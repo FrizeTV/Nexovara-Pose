@@ -1,0 +1,7 @@
+{
+	"jsonid": "input_profile",
+	"controller_type": "nexovarapose_hmd",
+	"input_bindingui_mode": "hmd",
+	"input_source": {},
+	"default_bindings": []
+}

@@ -1,0 +1,13 @@
+# Проверено с mediapipe 1.1.1, OpenCV 5.0, NumPy 2.5, PySide6 6.12, psutil 7.2 (Python 3.12–3.14).
+# opencv-contrib-python (а не opencv-python): именно его требует MediaPipe,
+# два пакета OpenCV одновременно конфликтуют.
+mediapipe>=0.10.14,<2
+opencv-contrib-python>=4.8,<6
+numpy>=1.24,<3
+# Интерфейс (Qt6). Essentials — только нужные модули, без WebEngine и т.п.
+PySide6-Essentials>=6.6,<7
+# Определение запущенных SteamVR/VRChat, объём ОЗУ для автонастройки
+psutil>=5.9,<8
+# Названия камер («Logitech C920», «DroidCam») без открытия камер: на Windows — готовый
+# бинарный пакет (abi3, Python 3.10–3.14), на Linux — чистый Python. MIT.
+cv2-enumerate-cameras>=1.4,<2; sys_platform == "win32" or sys_platform == "linux"
