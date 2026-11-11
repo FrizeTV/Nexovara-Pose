@@ -1,442 +1,310 @@
-# Nexovara Pose 0.8.9.1 beta — Full Body Tracking с веб-камер (для ПК)
+# Nexovara Pose
 
-Nexovara Pose находит тело на видео с одной или нескольких камер, строит 3D-скелет,
-стабилизирует его и отправляет трекеры в игры:
+**Webcam-based full-body tracking for SteamVR and VRChat.**  
+Version `0.8.9.1 beta` · MIT-licensed source code
 
-* **VRChat** — через OSC-трекеры VRChat.
-* **SteamVR-игры** (VRChat через SteamVR, ChilloutVR, Resonite и др.) — через **свой драйвер
-  Nexovara Pose** (C++). Тело «приклеивается» к вашему настоящему шлему.
-* **SteamVR без шлема** — драйвер Nexovara Pose создаёт виртуальный шлем: голова, руки и тело
-  берутся с камеры, игра показывается в окне на мониторе.
-* **Пальцы** (по желанию) — руки-контроллеры Index со скелетом пальцев в SteamVR.
+[English](#english) · [Русский](#русский) · [Releases](https://github.com/FrizeTV/Nexovara-Pose/releases) · [Issues](https://github.com/FrizeTV/Nexovara-Pose/issues)
 
-## Устройство
+## English
 
+Nexovara Pose estimates your 3D pose from one or more cameras connected to your PC and uses it to drive virtual body trackers. Use OSC to send trackers directly to VRChat, or use the bundled SteamVR driver to make them available to SteamVR games. The driver can also create a virtual headset and controllers for playing in a window on a monitor.
+
+The app interface is currently in Russian. This guide uses English translations of the controls. See the [Russian guide](#русский) for the exact on-screen labels.
+
+[Install](#install-and-run) · [Calibrate](#first-run-and-calibration) · [VRChat OSC](#connect-to-vrchat-over-osc) · [SteamVR](#connect-to-steamvr-with-a-physical-headset) · [Virtual headset](#run-steamvr-with-a-virtual-headset) · [Tracking options](#cameras-models-and-tracking-options) · [Build and test](#build-test-and-diagnose)
+
+### Choose a tracking mode
+
+| Mode | Use it for | Requirements |
+| --- | --- | --- |
+| **Auto (detect on startup)** | Automatically choose an output based on the running VR apps and the SteamVR driver state | Requirements depend on the selected output |
+| **VRChat (OSC)** | Send body trackers directly to VRChat over local OSC | VRChat in VR mode, with OSC enabled |
+| **SteamVR (Nexovara Pose driver)** | Use virtual body trackers with a physical headset in SteamVR games that support FBT | SteamVR and the Nexovara Pose driver |
+| **SteamVR without a headset** | Play on a monitor with a virtual headset, body trackers and camera-driven controllers | SteamVR and the Nexovara Pose driver. Keyboard and mouse controls require Windows |
+| **Test without a game** | Check tracking in the preview and inspect outgoing OSC packets | Nexovara Pose, with the OSC monitor optional |
+
+The default trackers are the hip and both feet. **Settings → Trackers** can also enable the chest, both knees and both elbows. Tracker slots stay fixed when you enable or disable individual trackers. Each game decides which roles it can use.
+
+### Install and run
+
+To run from source, you need 64-bit Python. For tracking, use a webcam, a phone configured as a webcam, or a local video file. The setup scripts accept Python 3.10–3.14. Packages need compatible wheels for your Python version and platform. Python 3.12 is a practical starting point if installation fails on a newer version.
+
+If a Windows binary is available under [Releases](https://github.com/FrizeTV/Nexovara-Pose/releases), extract the full release archive and follow its release notes. To run from source, download the source ZIP using **Code → Download ZIP**, extract it, and run the commands below from the folder containing `main.py`.
+
+**Windows (PowerShell)**
+
+```powershell
+.\setup.bat
+.\run.bat
 ```
-┌──────────────────────────── Nexovara Pose (Python + Qt6) ────────────────────────────┐
-│ камера 1 ─┐  каждая камера: свой поток + своя нейросеть (параллельно)          │
-│ камера 2 ─┼─ слияние 3D (ковариации: камеры под углом исправляют глубину)    │
-│ телефон  ─┘                                                                   │
-│   → свой человек (person lock) → фильтры → калибровка → реализм → трекеры     │
-│   → поток вывода 90 Гц (интерполяция) ─┬─ OSC → VRChat                         │
-│     + привязка к шлему (поза шлема ◄───┼──────────────────────────────┐        │
-│       приходит обратно от драйвера)    └─ UDP 127.0.0.1 → driver_nexovarapose ──────┼─┐
-└───────────────────────────────────────────────────────────────────────────────┘ │
-      driver_nexovarapose.dll (C++, SteamVR): трекеры как VIVE Tracker, руки как Index  ◄┘
-      со скелетом пальцев, кнопки с клавиатуры, виртуальный шлем (опционально);
-      в ответ присылает позу настоящего шлема
+
+**Linux or macOS (terminal)**
+
+```bash
+bash setup.sh
+bash run.sh
 ```
 
-Почему так, а не «всё на C++»: тяжёлая часть (нейросеть MediaPipe) уже работает в
-нативном коде, а обвязка на Python после оптимизации занимает ~2.5 мс на кадр. На C++
-написано то, где он действительно нужен — драйвер SteamVR.
+Setup creates `.venv`, installs the base dependencies, offers the optional ONNX Runtime and OSCQuery dependencies, and runs a self-check. It enables portable storage and normally prepares the base models. On Linux, the Qt platform plugin may require system libraries such as `libxcb-cursor0` and `libegl1` on Debian-based distributions. The macOS script is for the desktop app. The SteamVR driver targets Windows and Linux.
 
-## Что нового в 4.4.4 — «Камера открылась, но не отдаёт кадры»
+### First run and calibration
 
-* **Перезапуск трекинга (смена настроек, Стоп → Старт) больше не натыкается на свою же
-  камеру.** Новый запуск открывал камеру, пока поток прошлого запуска ещё доделывал
-  последний кадр (с тяжёлыми нейросетями — heavy, RTMPose-x — это заметно дольше), и
-  DirectShow «открывал» занятую камеру без кадров. Теперь программа ждёт, пока прошлый
-  запуск отпустит камеру.
-* **Первые кадры ждутся до 3 секунд** (камере после смены режима иногда нужно время), и при
-  неудаче камера открывается ещё раз — заново находится по названию (при запуске SteamVR
-  шлем добавляет свои USB-устройства, и номера камер могут смениться).
-* **Занятая камера больше не останавливает трекинг с ошибкой.** Программа пишет, почему
-  кадров нет (камеру держит браузер, Discord, OBS, Zoom…), и сама начинает трекинг, как
-  только камера освободится.
-* В журнале формат камеры больше не показывается мусором («}ë6ä» → «?» — драйвер камеры
-  не сообщает формат).
+1. Run **Auto setup** if it does not open on first launch. It checks available camera modes and benchmarks pose estimation. Review the camera and output mode under **Settings**. Auto setup keeps the settings you changed manually.
+2. Position the camera so your whole body is visible from head to feet. Use even lighting. In **Settings → Body and calibration**, enter your height in metres.
+3. Press **Start** (`F5`). Stand upright facing the camera, look straight ahead and keep your arms down. Press **Calibrate** (`F6`) and stay in position until it finishes. If using a physical headset with the driver, wear it during calibration.
+4. Check the camera preview, the 3D skeleton and the tracker-confidence panel. Then run the game's own FBT calibration. If you move the main camera or change the tracking setup, repeat app calibration and game calibration.
 
-## Что нового в 4.4.3 — без дрожания, голова на месте, трекеры не теряются
+In the app, `F5` starts or stops tracking, `F7` pauses the tracker pose, and `Ctrl+1` through `Ctrl+9` switch between saved profiles. Click a person in the preview to select them when several people are visible.
 
-* **Дрожание трекеров в SteamVR (появилось в 4.4.2).** Скорость трекеров угадывал
-  драйвер — по моментам прихода пакетов, а они на Windows приходят неровно (±2 мс), и
-  скорость «прыгала». Теперь скорость считает программа по своему же плавному потоку
-  (по времени кадра, а не прихода пакета), сглаженно (~80 мс; в замере это не добавило
-  дрожания), и передаёт драйверу. Драйвер ещё и сообщает SteamVR возраст позы, поэтому
-  между пакетами трекер движется плавно, а не ступеньками (шлемы 120–144 Гц). Выключается
-  галочкой «Упреждение трекеров в SteamVR».
-* **Голова «уходит назад», грудь впереди (VRChat).** VRChat совмещает присланную голову
-  со своим шлемом, то есть с ГЛАЗАМИ. Программа присылала середину головы (между ушами) —
-  на ~9 см позади глаз, и VRChat сдвигал все трекеры на 9 см вперёд. Теперь присылаются
-  глаза (как у виртуального шлема драйвера); в режиме «поза шлема из VRChat» — точная поза
-  шлема. В режиме SteamVR «глаза → середина головы» теперь считается по той же геометрии.
-* **Подошли к камере — трекеры улетали.** Голова выходила из кадра, нейросеть
-  додумывала уши и нос «как попало», а по голове выравнивается всё тело (VRChat и привязка
-  к шлему). Теперь, когда голову видно плохо, она строится от плеч (по измеренному
-  расстоянию плечи→голова), плавно. Кадры, в которых тело получилось нечеловеческим
-  (трекер в метрах от таза), отбрасываются.
-* **Программа не теряет вас, когда вы подходите к камере.** Если в кадре один человек и
-  он там же, где были вы мгновение назад, — это вы, даже если цвета одежды и пропорции
-  «поплыли» из-за обрезанного кадра.
-* **Калибровка не пропадает, трекеры не исчезают.** Если вас не видно (подошли вплотную,
-  отвернулись), трекеры до 20 с удерживаются в последней позе под шлемом и продолжают
-  отправляться — SteamVR и VRChat их не теряют, калибровка в игре не сбивается
-  (настройка «Держать трекеры в игре, если вас не видно»). Уровень пола тоже больше не
-  сбрасывается.
-* Поза шлема от драйвера принимается отдельным потоком с точным временем прихода
-  (привязка тела к шлему по времени стала точнее).
+### Connect to VRChat over OSC
 
-**Обновление с 4.4.2:** распакуйте, запустите **`build_driver.bat`**, закройте SteamVR,
-«Проверка и настройка SteamVR» → «Исправить». В VRChat заново откалибруйте FBT.
+1. Select **Settings → Game and output → Game / application → VRChat (OSC)**. Start VRChat in VR mode on the same PC and enable **Action Menu → Options → OSC → Enabled**.
+2. Start tracking and calibrate in Nexovara Pose. In VRChat, open **Quick Menu → Tracking & IK**. Enable **Toggle FBT** if needed and choose **Calibrate FBT**.
+3. If the avatar faces the wrong way, face the camera, look straight ahead and press **Align heading in VRChat** while tracking is running.
 
-## Что нового в 4.4.2 — SteamVR: трекеры не плавают и не отстают
+The default OSC destination is `127.0.0.1:9000`. To anchor the body to the headset pose reported by VRChat, enable **Use the VRChat headset pose (OSCQuery)** and accept VRChat's prompt if it appears. This feature uses `zeroconf`. If headset data is unavailable, tracking continues using the camera. Use VRChat's VR mode for body trackers and the SteamVR driver for virtual finger controllers.
 
-* **Главная причина «плавания» в SteamVR.** Тело «приклеивается» к шлему: программа
-  сравнивает, где голова на картинке камеры, и где шлем. Но поза шлема приходит
-  мгновенно, а кадр камеры к моменту обработки уже на 60–120 мс старый. Когда вы
-  наклонялись, кивали или поворачивали голову, шлем уже сдвинулся, а голова на картинке
-  ещё нет — и программа сдвигала всё тело вслед за этой разницей, а потом обратно. Отсюда
-  ноги и таз, которые «плавают» и «съезжают» при движениях головой. Теперь программа
-  хранит историю поз шлема и берёт ту, что была **в момент съёмки кадра**. В тесте с
-  наклонами головы ±20 см стопа гуляла на 6,9 см (СКО) — теперь на 0,0 см.
-* **Трекеры больше не отстают от шлема на картинке.** SteamVR показывает шлем и
-  контроллеры с упреждением — там, где они будут в момент показа кадра в шлеме, — а
-  трекеры Nexovara Pose показывались без упреждения, потому что драйвер не сообщал их скорость.
-  Теперь драйвер считает скорость каждого трекера по потоку данных (в 4.4.3 заменено: скорость считает программа) (сглаженно; у стоящего
-  трекера скорость ровно 0, поэтому дрожания нет), и SteamVR дорисовывает его движение так
-  же, как у шлема. Выключить: `"driver_nexovarapose": {"predictVelocity": false}` в
-  steamvr.vrsettings.
-* **Направление тела при калибровке (F6)** берётся как среднее за всю калибровку, а не по
-  одному последнему кадру, — тело не стоит «чуть повёрнутым». Если калибровка была сделана
-  без шлема, программа подскажет откалиброваться заново (иначе направление подбирается
-  само и может «уплывать»).
+See VRChat's [OSC tracker documentation](https://docs.vrchat.com/docs/osc-trackers) and [FBT guide](https://docs.vrchat.com/docs/full-body-tracking).
 
-**Обновление с 4.4.1:** распакуйте, запустите **`build_driver.bat`** (драйвер изменился),
-закройте SteamVR и нажмите «Проверка и настройка SteamVR» → «Исправить». Затем в шлеме
-встаньте лицом к камере, смотрите прямо и нажмите F6.
+### Connect to SteamVR with a physical headset
 
-## Что нового в 4.4.1 — подключение камеры при открытой программе
+1. Build the driver using the instructions below, or use the complete driver folder supplied with a release. The app expects `driver/dist/nexovarapose/` relative to its project folder or executable.
+2. Run SteamVR once if this is a new SteamVR installation, then close it. In Nexovara Pose, select **Settings → Game and output → Game / application → SteamVR (Nexovara Pose driver)**. Open **SteamVR diagnostics and setup… → Fix**, or use **Install or update in SteamVR**.
+3. While SteamVR is closed, use **Assign SteamVR tracker roles…** to assign roles. Start SteamVR, then start and calibrate tracking in Nexovara Pose. Complete FBT calibration in the game.
+4. After rebuilding the driver, close SteamVR and run **Install or update in SteamVR** again.
 
-* **Падение при подключении камеры.** Когда камеру отключали или подключали заново, пока
-  программа ей пользовалась, драйвер камеры застревал в чтении кадра, а программа при
-  остановке закрывала камеру из другого потока — прямо «под ногами» драйвера. Это
-  обращение к уже освобождённой памяти внутри драйвера: так падает программа, а у
-  некоторых драйверов камер — и вся система. Теперь камеру закрывает только тот поток,
-  который из неё читает, и только когда драйвер вернул управление.
-* **Программа не трогает камеры, пока Windows ставит новое устройство.** Подключили
-  USB-устройство — Windows сообщает об этом (WM_DEVICECHANGE), и на 4 секунды после
-  последнего такого сообщения Nexovara Pose не запрашивает список камер и ничего не открывает.
-  Недоустановленный драйвер — самое хрупкое место.
-* **Все операции с камерами — по очереди.** Список камер, открытие, настройка и закрытие
-  из разных потоков (основная камера, дополнительные, поиск камер) больше не идут
-  одновременно.
-* **Камеру можно выдернуть и вставить обратно.** Трекинг не останавливается с ошибкой:
-  программа отпускает камеру, ждёт её и снова открывает ту же камеру — по названию, даже
-  если её номер изменился (другой USB-порт). Если программа работала на запасной камере,
-  потому что вашей не было, — при её подключении переключится на неё сама.
-* При одинаковой скорости выбирается MJPG (в ~5 раз меньше нагрузка на USB, чем YUY2).
-* Если программа всё же упадёт внутри драйвера, место падения записывается в `crash.log`
-  в папке данных, а ошибки фоновых потоков — в `nexovara_pose.log`.
+The driver sends the physical headset pose back to the app to align the body with it. The app matches the headset pose to the time the camera frame was captured. It can also send tracker velocities so SteamVR can predict motion between updates. The default driver port is `39580`. If you already use physical controllers, set finger tracking to **Preview only** to avoid registering extra controllers.
 
-Если **весь компьютер** перезагружается или показывает синий экран даже после
-обновления — это сбой драйвера камеры или USB: обновите драйвер камеры (сайт
-производителя, для телефонов — DroidCam/Iriun/Camo), подключите камеру в другой порт
-(лучше прямо в компьютер, без хаба) и пришлите `crash.log` и имя файла драйвера с синего
-экрана.
+### Run SteamVR with a virtual headset
 
-## Что нового в 4.4
+1. With SteamVR closed and your physical headset disconnected, select **Settings → Game and output → Game / application → SteamVR without a headset** and run **SteamVR diagnostics and setup… → Fix**. This registers the driver and configures SteamVR to start with the virtual headset. The same settings page has window size, vertical field of view and head rotation options.
+2. Start SteamVR. Use its **Display VR View** option to view the scene on your monitor. Start and calibrate tracking in Nexovara Pose, then launch the game in VR mode.
+3. On Windows, with keyboard and mouse controls enabled, use `F8` to open the VRChat Quick Menu, `F10` to aim the right hand with the mouse, and left-click **Calibrate FBT**. Stand in the calibration pose and press `F9` to simulate both triggers. Press `F10` again to return to camera-driven hand aiming.
+4. Before returning to a physical headset, close SteamVR and disable virtual-headset mode using **Toggle headset-free mode**.
 
-Всё новое либо выключено по умолчанию, либо ничего не меняет, пока не сработает его
-условие, — старое поведение не меняется.
+### Cameras, models and tracking options
 
-* **Уверенность трекеров и подсказки.** Карточка «Уверенность трекеров» в главном окне:
-  полоска на каждый трекер (зелёный — камера видит уверенно, жёлтый — так себе, красный —
-  трекер достраивается или удерживается). В строке подсказки — совет, что исправить: «не
-  видно стоп — отойдите дальше», «вы далеко», «мало света», «камера даёт 12 кадров/с»,
-  «для калибровки встаньте лицом к камере». Совет появляется, только если проблема держится
-  дольше секунды, и не мигает.
-* **Сидя и лёжа ноги спокойнее.** Когда программа видит, что вы сидите или лежите, ноги
-  сглаживаются сильнее (быстрые движения проходят как обычно). Стоя ничего не меняется.
-* **Профили** для игр, аватаров и людей: режим игры, рост и масштаб, калибровка (длины ног
-  и рук), трекеры, сглаживание. Переключение — список в верхней панели или **Ctrl+1…9**;
-  создание — Настройки → Профили.
-* **Запись и повтор.** Кнопка «Запись» сохраняет ваши движения — только цифры позы, без
-  видео. По записи можно **подобрать сглаживание под себя** (предлагается только то, что
-  измеримо лучше текущего) и **воспроизвести** её вместо камеры, чтобы проверить настройки и
-  вывод в игру без камеры и нейросети. Настройки → Запись и повтор.
-* **Камеры калибруются сами.** С двумя и более камерами больше не нужно «8 секунд медленно
-  поворачиваться»: пока вы просто двигаетесь, программа вычисляет взаимный поворот камер
-  (~2 с) и пересчитывает его, если камеру сдвинули. Плохой результат (большая ошибка,
-  нестабильный, в кадре несколько людей, вы стоите неподвижно) никогда не сохраняется.
-* **Поза шлема из VRChat (OSCQuery).** Включается в Настройки → Игра и вывод → VRChat OSC.
-  VRChat сам сообщает Nexovara Pose, где ваш шлем, и тело «приклеивается» к нему так же, как в
-  режиме драйвера SteamVR: голова и курс берутся у шлема, а не с камеры — меньше дрожания, тело
-  не «уплывает». В VRChat должен быть включён OSC; когда VRChat начнёт присылать данные, он
-  покажет сообщение — подтвердите. Если поза не приходит, всё работает как раньше.
-* **Ансамбль до пяти моделей тела.** В «Настройки → Производительность → Ансамбль
-  моделей» можно выбрать основную MediaPipe Pose и до четырёх уточняющих ONNX-моделей
-  (RTMPose, MoveNet, RTMO и ViTPose). Скачайте их заранее в окне «Модели».
-  «Авто» использует только скачанные модели, ограничивает их число по ОЗУ и включает
-  их по замерам времени обработки кадров. В ручном режиме все выбранные модели
-  обрабатывают один кадр, что может снизить FPS. Глубина остаётся от MediaPipe,
-  согласованные координаты уточняются в плоскости изображения. Длина костей,
-  сглаживание и удержание трекеров используют текущие параметры трекинга.
-  В Windows ONNX Runtime может работать через DirectML, в Linux — через CPU
-  или CUDA при установленном совместимом пакете. Одновременно устанавливайте
-  только один пакет ONNX Runtime.
-* **Вторая нейросеть RTMPose (OpenMMLab) — на видеокарте или процессоре.** Точнее находит
-  суставы на картинке, особенно стопы (пятка, носки). MediaPipe по-прежнему даёт 3D и
-  следит за человеком, RTMPose уточняет: точка сдвигается к RTMPose только там, где та
-  уверена и согласна с MediaPipe.
-  Видеокарта — через DirectML (NVIDIA, AMD, Intel), без CUDA. В карточке «Нейросеть» видно
-  время RTMPose и **живой замер**: дрожание стоп без уточнения → с уточнением. Включается в
-  Настройки → Производительность (по умолчанию выключено). Модель скачивается заранее
-  через окно «Модели» с download.openmmlab.com.
-* **Чего нет и почему:** MeTRAbs (3D-поза в метрах) требует TensorFlow, а у TensorFlow нет
-  сборок для Windows под Python 3.14 и нет официальной ONNX-версии модели — запустить её
-  здесь нельзя. RTMW3D (3D от авторов RTMPose) официально выложен только как веса для
-  PyTorch; готовый ONNX есть лишь у сторонних людей, а программа скачивает модели только с
-  официальных адресов.
+| Feature | Where to find it and how it works |
+| --- | --- |
+| Camera and video input | **Camera** lists devices by name where available and lets you pick a local video file. Adjust capture resolution, requested FPS, pixel format, rotation, mirroring and vertical field of view. The app can retry a busy or disconnected camera and look it up again by name. |
+| Multiple cameras | **Camera → Add camera** supports up to four cameras total. Put a second camera about 45–90° from the first with overlapping views. While tracking, move with your whole body visible and keep other people out of frame. Automatic camera alignment runs in the background. For manual alignment use **Calibrate cameras (8 s)**. The camera panel shows how many additional camera feeds contribute to the 3D pose. A phone can act as a webcam through a tool such as DroidCam, Iriun or Camo. |
+| Body models | **Performance** offers MediaPipe Pose Lite, Full and Heavy. In **Single model / RTMPose** mode, you can use RTMPose-m or RTMPose-x to refine the MediaPipe pose. The ensemble modes can combine MediaPipe with up to four ONNX models chosen from RTMPose-m, RTMPose-x, MoveNet Lightning, MoveNet Thunder, RTMO-m and ViTPose-S WholeBody. |
+| Model downloads and performance | Open **Performance → Download models in advance**, tick the models you want and click **Download selected models**. Then select automatic or manual mode under **Model ensemble**. Automatic mode selects from the downloaded models based on available memory and frame processing time. Running more models in manual mode can reduce tracking FPS. MediaPipe supplies depth. The additional models refine 2D joint positions when their estimates agree. The **Pose model** card reports active models and timing. MediaPipe uses the CPU on Windows. ONNX Runtime can use DirectML on Windows or CUDA where a compatible runtime is installed. Install only one ONNX Runtime package in the environment. |
+| Person selection | **Person tracking** lets you lock tracking to one person, limit how many people the app considers and set when it switches to the only person in view. Selection uses pose, position and appearance cues in memory. The preview and confidence indicators help spot occlusion or a lost subject. |
+| Smoothing and movement | **Smoothing and realism** controls interpolation, configurable output rate (90 Hz by default), prediction, per-body-part smoothing, rotation smoothing, correction for left and right leg swaps, joint limits, estimation for legs hidden from view, and transitions between standing, sitting and lying down. **Game and output** also has camera-based movement estimation for setups without a physical headset anchor. |
+| Accuracy and body fit | **Accuracy** offers bone-length constraints, foot locking, floor clamping, visibility thresholds, One Euro filter controls and a configurable period for holding the last tracker poses if tracking is lost. **Body and calibration** lets you set your height, scale, yaw and position offsets. |
+| Hands and fingers | In **Fingers**, enable the separate MediaPipe hand model and choose preview or SteamVR output. The driver can expose Index-style controllers with finger skeletons and gesture-based trigger and grip inputs. Finger inference frequency and smoothing are configurable. |
+| Profiles | Use **Profiles** to save settings for different games, avatars or people, including calibration, tracker selection and smoothing. Switch in the toolbar or with `Ctrl+1` through `Ctrl+9`. |
+| Recording and replay | **Record** records numerical pose data to a local file. In **Recording and replay**, you can replay a recording through the tracking pipeline, use it to find better smoothing settings or delete it. |
 
-**Обновление с 4.3:** распакуйте и запустите `setup.bat` — он доставит необязательные модули
-(onnxruntime-directml, zeroconf). Драйвер не менялся, калибровка и настройки сохраняются.
+### Build, test and diagnose
 
-## Что нового в 4.3
+**Windows driver.** Install Visual Studio Build Tools with the **Desktop development with C++** workload, then run `.\build_driver.bat`. The script builds the driver and runs its C++ tests.
 
-**Почему аватар дёргался и был «кривым» — и что исправлено:**
+**Linux driver.** Install CMake 3.16 or later and a C++17 compiler. The current `build_driver.sh` can exit at the first progress update. Run CMake directly from the project root.
 
-* **Главная причина дёрганья (ошибка 4.2):** ускорение «искать других людей не на каждом
-  кадре» брало позу тела дважды в секунду из второй копии нейросети. Две копии дают чуть
-  разные позы — тело вздрагивало каждые 0,5 с. Теперь поза всегда из одной копии, вторая
-  только считает людей. Ускорение сохранено.
-* **VRChat (OSC) «уплывал» и кривился:** программа постоянно отправляла поворот головы с
-  камеры, а VRChat на каждый такой поворот медленно разворачивает всё пространство трекеров.
-  Теперь поворот выравнивается **один раз** — после калибровки F6 (или кнопкой «Выровнять
-  направление в VRChat»), а положение головы перед отправкой дополнительно сглаживается
-  (VRChat двигает все трекеры вместе с ней).
-* **SteamVR со шлемом:** раньше тело привязывалось к шлему только при установленном модуле
-  `openvr`, иначе трекеры «жили» отдельно от шлема. Теперь **драйвер сам присылает позу
-  шлема** (ничего ставить не нужно), привязка идёт 90 раз в секунду, а смещение
-  сглаживается — шум головы с камеры больше не трясёт всё тело.
-* **Стопа поворачивалась вместе с голенью:** присели — стопа аватара наклонилась. Теперь
-  стопа ориентируется как настоящий трекер на ноге: по линии пятка→носок и полу, курс
-  частично стабилизирован тазом. Стоящая на полу стопа держит и положение, и поворот.
-* **Новое сглаживание** (замерено на реальной нейросети, фото человека + шум веб-камеры,
-  против старого фильтра): каждая часть тела сглаживается по-своему, а задержка
-  сглаживания компенсируется без «перелёта» при остановке. Корпус: дрожание −17 %, задержка
-  −21 мс; колени/локти: −15 %, −21 мс; стопы: −10 %, −18 мс. **Стабилизатор** гасит
-  миллиметровую дрожь, когда вы стоите. **Ноги больше не «перепрыгивают»** друг на друга,
-  когда нейросеть путает левую и правую.
-* Итог на всём конвейере (тот же тест, стоя): самая шумная стопа — 2,8 мм вместо 6,9 мм за
-  кадр (пики 6,4 вместо 15,9 мм), вторая стопа — 0,06 вместо 1,2 мм, голова — 0,5 вместо
-  1,5 мм, повороты стоп — в 3–4 раза спокойнее.
-* **VMT полностью убран** (и всё, что с ним связано) — его заменяет свой драйвер. Старые
-  настройки переносятся сами (режим «SteamVR (VMT)» → «SteamVR — драйвер Nexovara Pose»).
+```bash
+cmake -S driver -B driver/build -DCMAKE_BUILD_TYPE=Release
+cmake --build driver/build --parallel
+(cd driver/build && ctest --output-on-failure)
+```
 
-**Обновление с 4.2:** распакуйте, запустите `setup.bat`, затем **`build_driver.bat`**
-(драйвер изменился: он теперь присылает позу шлема), закройте SteamVR и нажмите
-«Проверка и настройка SteamVR» → «Исправить». После обновления откалибруйтесь заново (F6,
-потом калибровка FBT в игре).
+CMake writes the binary and resources to `driver/dist/nexovarapose/`. The C++ tests cover the UDP protocol and driver behavior in a mock SteamVR host. For the Windows desktop build, run `.\build_exe.bat` after setup. It produces `dist\Nexovara Pose\Nexovara Pose.exe` in a folder that should be kept together. The driver is built separately.
 
-## Что нового в 4.2
+**Python tests.** Run from the project root after setup. ONNX and OSCQuery tests can use the optional runtime dependencies. The ONNX fixture tests also need `onnx`.
 
-* **Игра без шлема заработала по-настоящему.** Что мешало раньше:
-  1. драйвер регистрировался из папки с русскими буквами (`C:\Users\Пользователь\...`) —
-     утилита SteamVR портила путь, и SteamVR драйвер не загружал. Теперь драйвер ставится в
-     `C:\ProgramData\Nexovara Pose\SteamVR\nexovarapose` и прописывается программой сама (с резервной
-     копией), старые испорченные записи удаляются;
-  2. в режиме без шлема SteamVR оставался в режиме «шлем обязателен» (`requireHmd`) — теперь
-     выключается (и возвращается как было при выключении режима);
-  3. у виртуального шлема не было своей «комнаты» (SteamVR: «universe id is invalid», просьбы
-     пройти Room Setup) — теперь драйвер сообщает пол и комнату 3×3 м сам;
-  4. без контроллеров в VRChat нельзя открыть меню и откалибровать FBT — теперь **кнопки с
-     клавиатуры**: F8 — меню (B), F9 — оба курка, F10 — правая рука следует за мышью,
-     клик — курок. Клавиши работают, даже когда активно окно игры.
-* **Окно «Проверка и настройка SteamVR»** (Настройки → Игра и вывод): по шагам показывает,
-  где рвётся цепочка Nexovara Pose → драйвер → SteamVR → игра, читает журнал SteamVR (загрузился
-  ли драйвер, доходят ли данные) и кнопкой «Исправить» чинит установку и настройки.
-* **VRChat без шлема (обычный режим) трекеры тела не принимает** — это ограничение VRChat.
-  Программа теперь замечает такой запуск и подсказывает, что делать.
-* Со **шлемом** драйвер Nexovara Pose теперь тоже привязывает тело к шлему.
-* **Быстрее:** когда вы в кадре один, нейросеть не ищет других людей на каждом кадре
-  (−30…45 % времени на кадр при включённом «следить за одним человеком»); другие люди
-  ищутся 2 раза в секунду и сразу, как только тело потеряно.
-* **Пальцы:** программа отбрасывает кадр, если в квадрат одной руки попала другая рука, и
-  подстраивает «открытую ладонь» под вас — пальцы в игре выпрямляются полностью.
-* Окно шлема меньше нагружает видеокарту: рисуется ровно столько пикселей, сколько видно в
-  окне; размер окна и угол обзора настраиваются.
+```powershell
+.\.venv\Scripts\python.exe -m pip install pytest python-osc onnx
+.\.venv\Scripts\python.exe -m pytest tests
+```
 
-**Обновление с 4.1:** распакуйте новую версию, запустите `setup.bat` (на всякий случай),
-затем **`build_driver.bat`** (драйвер изменился), закройте SteamVR и нажмите в Nexovara Pose
-«Проверка и настройка SteamVR» → «Исправить».
+```bash
+.venv/bin/python -m pip install pytest python-osc onnx
+.venv/bin/python -m pytest tests
+```
 
-## Без шлема — пошагово (VRChat)
+| Symptom | What to check |
+| --- | --- |
+| The camera opens but shows no frames | Close other apps using it, select the device again in **Camera**, and try a lower resolution or frame rate. |
+| Tracking lags or feet drift | Check camera FPS, lighting, framing and model timings. Try MediaPipe Lite or fewer ONNX models. Start with hip and feet, recalibrate, and consider a second camera if depth is the issue. |
+| SteamVR shows no trackers | Use **SteamVR diagnostics and setup…** to check that the driver is built, registered and loaded and that it receives data. Then check roles and the game's calibration. |
+| VRChat shows no OSC trackers | Verify VR mode, OSC and the port. To inspect local traffic, close VRChat, select **Test without a game** and use `.\osc_monitor.bat` or `bash osc_monitor.sh`. |
+| Setup or startup fails | On Windows use `.\selfcheck.bat` and `.\run_debug.bat`. On Linux/macOS run `.venv/bin/python -I tools/selfcheck.py` and check the terminal. In the app, **Privacy → Open folder** opens the data and logs folder. |
 
-1. `build_driver.bat` (один раз и после обновлений).
-2. Закройте SteamVR. Nexovara Pose → Настройки → Игра и вывод → режим **«SteamVR без шлема»** →
-   **«Проверка и настройка SteamVR»** → **«Исправить»**.
-3. Запустите SteamVR — появится окно виртуального шлема. В Nexovara Pose: **Старт** (F5), встаньте
-   в кадр целиком, **Калибровка** (F6).
-4. Запустите VRChat **в режиме VR** (не «Desktop»). Окно игры — окно шлема на мониторе
-   (удобнее смотреть через SteamVR → «Показать VR-вид»).
-5. В VRChat: **F8** — откроется Quick Menu; **F10** — правая рука следует за мышью, наведите
-   на «Calibrate FBT», **клик**; встаньте ровно, как аватар, — **F9** (оба курка).
-6. Ходить — клавишами WASD. Ещё раз F10 — рука снова следует за камерой.
+### Source layout
 
-Если что-то не работает — снова «Проверка и настройка SteamVR»: первый пункт с ✖ — причина.
+The Python app captures frames, estimates pose, combines camera views and applies calibration and filters. A separate sender publishes tracker poses to local OSC or to the C++ OpenVR driver. The driver registers the virtual devices with SteamVR.
 
-## Что нового в 4.1
+| Path | Responsibility |
+| --- | --- |
+| [`main.py`](main.py), [`fbt/ui/`](fbt/ui/) | Qt startup, previews, setup wizard, settings, model downloads and SteamVR diagnostics |
+| [`fbt/camera.py`](fbt/camera.py), [`fbt/multicam.py`](fbt/multicam.py), [`fbt/engine.py`](fbt/engine.py) | Camera capture, camera alignment and fusion, and the tracking pipeline |
+| [`fbt/model_catalog.py`](fbt/model_catalog.py), [`fbt/pose.py`](fbt/pose.py), [`fbt/onnx_pose.py`](fbt/onnx_pose.py), [`fbt/rtmpose.py`](fbt/rtmpose.py), [`fbt/ensemble.py`](fbt/ensemble.py), [`fbt/hands.py`](fbt/hands.py) | Model registry, MediaPipe and ONNX inference, joint fusion and finger tracking |
+| [`fbt/person.py`](fbt/person.py), [`fbt/skeleton.py`](fbt/skeleton.py), [`fbt/filters.py`](fbt/filters.py), [`fbt/realism.py`](fbt/realism.py), [`fbt/guidance.py`](fbt/guidance.py) | Person selection, skeleton calibration, filtering, pose constraints and on-screen guidance |
+| [`fbt/sender.py`](fbt/sender.py), [`fbt/outputs.py`](fbt/outputs.py), [`fbt/hmd.py`](fbt/hmd.py), [`fbt/oscquery.py`](fbt/oscquery.py), [`fbt/steamvr.py`](fbt/steamvr.py), [`fbt/controls.py`](fbt/controls.py) | Timed output, OSC and driver packets, headset anchoring, SteamVR registration and simulated controls |
+| [`fbt/config.py`](fbt/config.py), [`fbt/profiles.py`](fbt/profiles.py), [`fbt/recording.py`](fbt/recording.py), [`fbt/autotune.py`](fbt/autotune.py) | Local settings, profiles, pose recordings and tuning |
+| [`fbt/presets.py`](fbt/presets.py), [`fbt/system.py`](fbt/system.py), [`fbt/mathutil.py`](fbt/mathutil.py), [`fbt/net.py`](fbt/net.py), [`fbt/osc.py`](fbt/osc.py) | Output presets, timing, 3D math, model-download networking and OSC encoding |
+| [`driver/src/`](driver/src/), [`driver/nexovarapose/`](driver/nexovarapose/), [`driver/third_party/`](driver/third_party/) | C++ OpenVR driver, manifest and resources, and vendored Valve code |
+| [`tests/`](tests/), [`driver/tests/`](driver/tests/), [`tools/`](tools/), [`models/README.txt`](models/README.txt) | Python and C++ tests, setup and diagnostic tools, and manual base-model downloads |
 
-* **Исправлено: «Unable to open file at C:\Users\Пользователь\...\pose_landmarker_full.task».**
-  Нейросеть MediaPipe на Windows не умеет открывать файлы, в пути к которым есть русские
-  буквы (например, имя пользователя «Пользователь»). Теперь программа сама читает файл
-  модели и передаёт нейросети его содержимое — путь может быть любым.
-* **Исправлено: автонастройка падала с «Не удалось открыть камеру #3».** Номера камер в
-  Windows меняются, когда подключаешь/отключаешь устройства. Теперь программа запоминает
-  **название** камеры и находит её по нему; если камеры нет — берёт подключённую и
-  сообщает об этом, а автонастройка позволяет вернуться и выбрать другую камеру.
-* **Названия камер везде:** в автонастройке (выбор камеры и ход проверки), в настройках
-  (главная и дополнительные камеры), на карточке «Камера», в сообщениях и в `selfcheck`.
-  Например: «Logitech HD Pro Webcam C920 (#1)», «DroidCam Source 3 (#2)». Названия берутся
-  у системы без включения камер (пакет `cv2-enumerate-cameras`, MIT).
+### Local data, limitations and license
 
-**Обновление с 4.0:** распакуйте новую версию поверх старой (или в новую папку) и
-**запустите `setup.bat` ещё раз** — он доустановит пакет для названий камер. Без него
-программа тоже работает, но камеры будут видны только по номерам.
+Camera frames are processed locally. The recording feature stores numerical poses, and tracker packets go to `127.0.0.1`. The optional OSCQuery feature advertises its service over mDNS for discovery. Setup can fetch Python packages, and the app downloads model files over HTTPS when needed. SteamVR configuration changes are initiated from the UI with SteamVR closed and use backups.
 
-## Что нового в 4-й версии
+With `portable.txt` present, settings, recordings and logs are stored in `data/` alongside the project or executable. Without the marker, the app uses `%APPDATA%\Nexovara Pose` on Windows, `${XDG_CONFIG_HOME:-~/.config}/Nexovara Pose` on Linux, or `~/Library/Application Support/Nexovara Pose` on macOS. Models may be in the project `models/` folder or in the app's data folder. Use **Privacy** to open the data folder, clear logs, or remove personal settings and recordings while keeping the model files.
 
-* **Оптимизация:** обвязка трекинга ускорена в ~2.2 раза (5.6 → 2.5 мс/кадр без учёта
-  нейросети): нейросеть получает уменьшенный кадр, превью переиспользует его, руки
-  вырезаются из полного кадра, быстрая 3D-математика. Исправлен таймер Windows (раньше
-  вывод 90 Гц фактически работал рывками ~64 Гц), приоритет процесса «выше среднего».
-* **Несколько камер** (до 4: USB и телефон как веб-камера через DroidCam/Iriun/Camo):
-  параллельная обработка, калибровка взаимного положения камер за 8 секунд по вашему
-  телу (без шахматных досок), слияние с учётом точности каждой камеры, защита от
-  «чужого человека» в дополнительной камере.
-* **Свой драйвер SteamVR на C++**: трекеры, руки с пальцами, виртуальный шлем.
-* **SteamVR без шлема.**
+This is a beta. A single camera estimates depth and can lose accuracy during occlusion, sideways movement or poor lighting. Additional cameras and models cost processing time, and the configured output rate is separate from camera and inference FPS. Hardware, SteamVR runtime and game compatibility can vary. Report problems in [Issues](https://github.com/FrizeTV/Nexovara-Pose/issues) with the OS, camera setup, output mode, steps to reproduce and relevant log lines.
 
-## Установка (Windows)
+The project's own code is under the [MIT License](LICENSE). See [Third-party notices](THIRD_PARTY_NOTICES.md) for dependencies, model terms and the Valve [OpenVR](driver/third_party/openvr/LICENSE) and [sample-code](driver/third_party/valve/LICENSE) licenses.
 
-1. Распакуйте архив, запустите **`setup.bat`** (ставит всё в папку проекта).
-2. Запустите **`run.bat`** — при первом запуске откроется автонастройка.
+---
 
-### Драйвер SteamVR (нужен для режимов «драйвер Nexovara Pose» и «без шлема»)
+## Русский
 
-1. Запустите **`build_driver.bat`**. Нужны бесплатные *Visual Studio Build Tools* с
-   компонентом «Разработка классических приложений на C++» — если их нет, скрипт
-   предложит поставить через winget. После сборки скрипт сам прогонит тесты драйвера
-   (в том числе с имитацией SteamVR).
-2. Закройте SteamVR. В Nexovara Pose: **Настройки → Игра и вывод → «Проверка и настройка
-   SteamVR» → «Исправить»** (или «Установить / обновить в SteamVR»). Драйвер копируется в
-   `C:\ProgramData\Nexovara Pose\SteamVR\nexovarapose` — путь без русских букв, который SteamVR
-   точно прочитает. После каждой пересборки драйвера нажмите «Исправить» ещё раз.
-3. Назначьте роли трекерам: кнопка «Назначить роли трекерам…» (талия, ноги).
-4. Выберите режим «SteamVR — драйвер Nexovara Pose» (со шлемом) или «SteamVR без шлема».
-   Со шлемом тело привязывается к шлему само — позу шлема присылает драйвер (модуль
-   openvr больше не обязателен, он используется только как запасной вариант).
+Nexovara Pose оценивает трёхмерную позу человека по видео с одной или нескольких камер и превращает её в виртуальные трекеры тела. Программа может передавать трекеры напрямую в VRChat через OSC или предоставлять их играм SteamVR через собственный драйвер. Драйвер также умеет создавать виртуальный шлем и контроллеры для игры на мониторе.
 
-### SteamVR без шлема
+[Установка](#установка-и-запуск) · [Калибровка](#первый-запуск-и-калибровка) · [VRChat OSC](#vrchat-через-osc) · [SteamVR](#steamvr-с-настоящим-шлемом) · [Виртуальный шлем](#steamvr-с-виртуальным-шлемом) · [Настройки трекинга](#камеры-модели-и-настройки-трекинга) · [Сборка и тесты](#сборка-тесты-и-диагностика)
 
-Пошагово — в разделе «Без шлема — пошагово (VRChat)» выше. Не включайте этот режим при
-подключённом настоящем шлеме. Пальцы — по желанию (согнуть указательный — курок, сжать
-кулак — хват); без пальцев кнопки нажимаются клавишами F8/F9/F10.
+### Какой режим выбрать
 
-VRChat в обычном (desktop) режиме трекеры тела не принимает — это ограничение VRChat;
-поэтому «без шлема» работает через SteamVR.
+| Режим в приложении | Для чего нужен | Что потребуется |
+| --- | --- | --- |
+| **Авто (определять при запуске)** | Выбор вывода по запущенным VR-программам и состоянию драйвера SteamVR | Требования зависят от выбранного режима вывода |
+| **VRChat (OSC)** | Передача трекеров напрямую в VRChat по локальному OSC | VRChat в режиме VR и включённый OSC |
+| **SteamVR — драйвер Nexovara Pose** | Виртуальные трекеры с настоящим шлемом в играх SteamVR с поддержкой FBT | SteamVR и драйвер Nexovara Pose |
+| **SteamVR без шлема** | Виртуальный шлем, трекеры и контроллеры с камеры для игры на мониторе | SteamVR и драйвер Nexovara Pose. Управление с клавиатуры и мыши работает в Windows |
+| **Тест без игр** | Проверка предпросмотра и отправляемых координат | Приложение и, при необходимости, OSC-монитор |
 
-### Несколько камер
+По умолчанию включены три трекера: таз и обе стопы. В **Настройки → Трекеры** можно добавить грудь, оба колена и оба локтя. Номера трекеров закреплены за частями тела. Поддержка отдельных ролей зависит от игры.
 
-1. Настройки → Камера → «Добавить камеру» (вторая камера под углом 45–90° к первой).
-2. Запустите трекинг и просто двигайтесь так, чтобы вас видели все камеры: камеры
-   откалибруются сами за пару секунд (пока в кадре больше никого нет). Ручная калибровка —
-   кнопка «Калибровка камер (8 с)»: медленно поворачивайтесь, поднимайте руки.
-3. На карточке «Камера» будет видно, сколько камер участвует в 3D.
+### Установка и запуск
 
-Телефон как камера: поставьте DroidCam / Iriun / Camo (на телефон и ПК) — он появится в
-списке камер как обычная веб-камера. По Bluetooth видео не передать (не хватает
-скорости), поэтому только Wi‑Fi/USB через эти приложения.
+Для запуска из исходников нужен 64-битный Python. Для трекинга подойдёт веб-камера, телефон в режиме веб-камеры или локальный видеофайл. Скрипты установки принимают Python 3.10–3.14 при наличии готовых пакетов для вашей версии Python и системы. Если установка на более новой версии не проходит, попробуйте Python 3.12.
 
-## Как пользоваться
+Если в [Releases](https://github.com/FrizeTV/Nexovara-Pose/releases) есть готовая сборка Windows, распакуйте архив целиком и следуйте инструкции релиза. Для запуска из исходников скачайте ZIP через **Code → Download ZIP**, распакуйте его и выполняйте команды в папке, где лежит `main.py`.
 
-* **Старт (F5)**, встаньте в кадр целиком, **Калибровка (F6)**, затем калибровка FBT в игре.
-* **Пауза (F7)** — заморозить трекеры. Клик по человеку в видео — следить за ним.
-* **Запись** — записать свои движения (только цифры позы); потом Настройки → Запись и повтор:
-  подобрать сглаживание под себя или воспроизвести запись вместо камеры.
-* **Профили** — Ctrl+1…9 или список в верхней панели.
-* `osc_monitor.bat` — посмотреть данные для VRChat без игры.
+**Windows (PowerShell)**
 
-## Тесты
+```powershell
+.\setup.bat
+.\run.bat
+```
 
-* Python: `.venv\Scripts\python -m pip install pytest python-osc`, затем
-  `.venv\Scripts\python -m pytest tests` (223 теста; проверка C++-парсера включается,
-  если драйвер собран; тесты ONNX/mDNS — если установлены onnxruntime, onnx, zeroconf).
-* C++: `build_driver.bat` сам запускает `nexovarapose_protocol_test` и `nexovarapose_driver_host_test`
-  (драйвер загружается в имитацию SteamVR: шлем, 3 трекера, 2 руки, позы, жесты, скелет,
-  таймаут, мусорные пакеты).
+**Linux или macOS (терминал)**
 
-## Файлы
+```bash
+bash setup.sh
+bash run.sh
+```
 
-| Файл | Назначение |
-|---|---|
-| `fbt/camera.py` | Камеры: список, открытие, замер режимов, захват с переподключением |
-| `fbt/engine.py` | Конвейер трекинга |
-| `fbt/multicam.py` | Несколько камер: потоки, калибровка связки, слияние |
-| `fbt/system.py` | Точный таймер Windows, приоритет процесса |
-| `fbt/sender.py` | Вывод 90 Гц с интерполяцией |
-| `fbt/outputs.py` | VRChat OSC, драйвер Nexovara Pose (протокол) |
-| `fbt/hmd.py` | Поза настоящего шлема и «приклеивание» тела к нему |
-| `fbt/filters.py` | Сглаживание по частям тела, компенсация задержки, стабилизатор, защита от перепутанных ног, смягчение сидя/лёжа |
-| `fbt/guidance.py` | Уверенность трекеров и подсказки, как встать |
-| `fbt/profiles.py` | Профили игр / аватаров / людей |
-| `fbt/recording.py` | Запись позы (без видео), повтор, подбор сглаживания по записи |
-| `fbt/oscquery.py` | Поза шлема из VRChat (OSCQuery: HTTP + mDNS, только 127.0.0.1) |
-| `fbt/rtmpose.py` | Вторая нейросеть RTMPose через ONNX Runtime (DirectML / CUDA / CPU) |
-| `fbt/person.py`, `realism.py`, `skeleton.py`, `hands.py` | Человек, реализм, скелет, пальцы |
-| `fbt/steamvr.py` | SteamVR: шлем, установка драйвера, роли, режим без шлема, проверка |
-| `fbt/controls.py` | Кнопки контроллеров с клавиатуры и мыши (игра без контроллеров) |
-| `fbt/net.py` | Скачивание напрямую / через прокси |
-| `fbt/ui/steamvr_check.py` | Окно «Проверка и настройка SteamVR» |
-| `fbt/ui/devwatch.py` | Подключение/отключение устройств Windows (камеры не трогаются, пока ставится драйвер) |
-| `fbt/ui/*` | Интерфейс Qt6 |
-| `driver/src/*` | Драйвер SteamVR на C++ (протокол, приём UDP, устройства) |
-| `driver/tests/*` | Тесты драйвера (протокол, имитация SteamVR) |
-| `driver/third_party/*` | `openvr_driver.h` и пример скелета руки Valve (BSD-3) |
-| `build_driver.bat` / `.sh` | Сборка драйвера |
+Установщик создаёт `.venv`, ставит основные зависимости, предлагает установить ONNX Runtime и компоненты OSCQuery и запускает самопроверку. Он включает портативный режим и по умолчанию подготавливает базовые модели. В Linux плагину Qt могут понадобиться системные библиотеки, например `libxcb-cursor0` и `libegl1` в дистрибутивах на базе Debian. Скрипт для macOS предназначен для запуска приложения. Драйвер SteamVR собирается для Windows и Linux.
 
-## Безопасность и конфиденциальность
+### Первый запуск и калибровка
 
-* Видео обрабатывается только на этом ПК и нигде не сохраняется; трекеры отправляются
-  только на 127.0.0.1 (запрещено в коде), драйвер слушает только 127.0.0.1.
-* Драйвер проверяет каждый пакет строго (размер, версия, номера устройств, конечные
-  числа, разумные координаты) и отбрасывает всё остальное; протестирован на 20 000
-  случайных пакетов с AddressSanitizer/UBSan.
-* Изменения настроек SteamVR — только по кнопке, только при закрытом SteamVR, с
-  резервной копией (steamvr.vrsettings и openvrpaths.vrpath).
-* Клавиши F8/F9/F10 и кнопка мыши только опрашиваются (нажата/нет) и только в режиме
-  драйвера с руками; ничего не записывается и не сохраняется.
-* Модели — с разрешённых адресов Google, OpenMMLab и Hugging Face, по
-  HTTPS, контрольные суммы проверяются; из архива RTMPose извлекается только сама модель.
-* Поза шлема из VRChat (выключено по умолчанию): HTTP-сервер и приёмник слушают только
-  127.0.0.1 и отвечают двумя фиксированными JSON; пакеты принимаются только с 127.0.0.1 и
-  разбираются строго. Объявление по mDNS содержит только «Nexovara Pose-xxxx», порты и 127.0.0.1.
-* Записи движений — только цифры позы, без видео; читаются без pickle и проверяются, как
-  настройки. Удаляются кнопкой «Удалить все мои данные».
-* **Прокси и VPN.** Скачивание моделей сначала идёт напрямую, в обход системного
-  прокси; если так не получается (сайт заблокирован, сеть работает только через прокси) —
-  повторяется через системный прокси. Проверка сертификатов и список разрешённых адресов
-  одинаковы в обоих случаях. Данные трекинга (OSC в VRChat, драйвер) идут только внутри
-  ПК через 127.0.0.1: прокси и VPN их не трогают.
+1. Нажмите **Автонастройка**, если она не открылась при первом запуске. Программа проверит режимы камеры и измерит скорость обработки. Откройте **Настройки**, чтобы проверить камеру и режим вывода. Автонастройка сохраняет параметры, которые вы выставили вручную.
+2. Поставьте камеру так, чтобы было видно всё тело от головы до стоп. Обеспечьте равномерное освещение. В **Настройки → Тело и калибровка** укажите рост в метрах.
+3. Нажмите **Старт** (`F5`). Встаньте прямо лицом к камере, опустите руки и смотрите вперёд. Нажмите **Калибровка** (`F6`) и дождитесь завершения. Если используете драйвер с настоящим шлемом, наденьте шлем перед калибровкой.
+4. Проверьте предпросмотр, 3D-скелет и уверенность трекеров. Затем выполните отдельную FBT-калибровку в игре. Если переставили основную камеру или поменяли схему трекинга, повторите обе калибровки.
 
-## Ограничения
+В окне программы `F5` запускает и останавливает трекинг, `F7` удерживает позу трекеров, а `Ctrl+1`–`Ctrl+9` переключают сохранённые профили. Если в кадре несколько людей, нажмите на нужного человека в предпросмотре.
 
-* Драйвер проверен компиляцией (Linux gcc, Windows x64 через zig/mingw), тестами и
-  имитацией SteamVR; в настоящем SteamVR его нужно проверить у себя.
-* Одна камера плохо видит глубину; несколько камер это заметно исправляют.
-* Сглаживание 4.3 подобрано и замерено на облегчённой модели (lite) с реальным фото
-  человека и искусственным шумом веб-камеры; в настоящих SteamVR/VRChat его нужно
-  проверить у себя. Если что-то стало хуже — «Против дрожания» в настройках можно
-  выключить по пунктам.
-* RTMPose проверен на искусственной ONNX-модели (тот же формат входа/выхода): настоящие
-  веса здесь скачать было нельзя. Насколько он точнее на вашей камере, показывает живой
-  замер в карточке «Нейросеть» — оставляйте его, только если стало лучше.
-* «Поза шлема из VRChat» проверена по документации VRChat/OSCQuery и тестами протокола;
-  с настоящим VRChat её нужно проверить у себя (если поза не приходит — всё работает как
-  раньше).
-* Видеофайл для теста лучше класть в папку без русских букв в пути: OpenCV на Windows
-  не всегда открывает такие пути (программа пробует короткое имя пути автоматически).
+### VRChat через OSC
 
-Лицензия: MIT. MediaPipe и модели — Apache 2.0 (Google). RTMPose — Apache 2.0 (OpenMMLab),
-обработка входа/выхода — по образцу rtmlib (Apache 2.0). OpenVR и примеры Valve — BSD-3.
+1. Выберите **Настройки → Игра и вывод → Игра / приложение → VRChat (OSC)**. Запустите VRChat в режиме VR на том же ПК и включите **Action Menu → Options → OSC → Enabled**.
+2. Запустите трекинг и откалибруйтесь в Nexovara Pose. В VRChat откройте **Quick Menu → Tracking & IK**, при необходимости включите **Toggle FBT** и выберите **Calibrate FBT**.
+3. Если аватар смотрит в другую сторону, встаньте лицом к камере, смотрите прямо и нажмите **Выровнять направление в VRChat** при запущенном трекинге.
+
+Стандартный адрес OSC — `127.0.0.1:9000`. Чтобы привязать тело к позе шлема из VRChat, включите **Брать позу шлема из VRChat (OSCQuery) — точнее** и подтвердите запрос в игре, если он появится. Функции нужен пакет `zeroconf`. Если поза шлема недоступна, трекинг продолжится по камере. Для трекеров тела нужен режим VR, а для виртуальных контроллеров с пальцами — драйвер SteamVR.
+
+См. документацию VRChat по [OSC-трекерам](https://docs.vrchat.com/docs/osc-trackers) и [полному отслеживанию тела](https://docs.vrchat.com/docs/full-body-tracking).
+
+### SteamVR с настоящим шлемом
+
+1. Соберите драйвер по инструкции ниже или возьмите полную папку драйвера из релиза. Приложение ищет её по пути `driver/dist/nexovarapose/` относительно папки проекта или исполняемого файла.
+2. Если SteamVR установлен только что, запустите его один раз, затем закройте. В Nexovara Pose выберите **Настройки → Игра и вывод → Игра / приложение → SteamVR — драйвер Nexovara Pose**. Нажмите **Проверка и настройка SteamVR…**, затем **Исправить**. Для установки или обновления драйвера также есть кнопка **Установить / обновить в SteamVR**.
+3. Пока SteamVR закрыт, нажмите **Назначить роли трекерам в SteamVR…**. Затем запустите SteamVR, включите трекинг и откалибруйтесь в Nexovara Pose. После этого выполните FBT-калибровку в игре.
+4. После пересборки драйвера закройте SteamVR и снова нажмите **Установить / обновить в SteamVR**.
+
+Драйвер передаёт приложению позу настоящего шлема, чтобы привязать к нему тело. Приложение сопоставляет её со временем съёмки кадра и может передавать скорости трекеров для упреждения в SteamVR. Стандартный порт драйвера — `39580`. При использовании физических контроллеров для трекинга пальцев выбирайте **Только показывать в программе**, чтобы SteamVR не зарегистрировал дополнительные контроллеры.
+
+### SteamVR с виртуальным шлемом
+
+1. Закройте SteamVR и отключите настоящий шлем. Выберите **Настройки → Игра и вывод → Игра / приложение → SteamVR без шлема** и нажмите **Проверка и настройка SteamVR…**, затем **Исправить**. Приложение зарегистрирует драйвер и настроит SteamVR на запуск с виртуальным шлемом. На той же странице можно изменить размер окна, вертикальный угол обзора и поворот виртуального шлема.
+2. Запустите SteamVR. Чтобы видеть сцену на мониторе, откройте **Показать VR-вид**. Запустите трекинг и откалибруйтесь в Nexovara Pose, затем запустите игру в режиме VR.
+3. В Windows при включённом управлении с клавиатуры и мыши нажмите `F8`, чтобы открыть Quick Menu VRChat. Нажмите `F10`, наведите правую руку мышью и щёлкните левой кнопкой по **Calibrate FBT**. Примите калибровочную позу и нажмите `F9` для имитации обоих курков. Повторное нажатие `F10` вернёт управление направлением руки с камеры.
+4. Чтобы вернуться к настоящему шлему, закройте SteamVR и выключите виртуальный режим кнопкой **Включить/выключить режим без шлема**.
+
+### Камеры, модели и настройки трекинга
+
+| Возможность | Где найти и как работает |
+| --- | --- |
+| Камера и видеофайл | В разделе **Камера** можно выбрать устройство по имени, если оно доступно, или открыть локальный видеофайл. Настраиваются разрешение, запрашиваемый FPS, формат кадров, поворот, отражение и вертикальный угол обзора. Программа повторяет попытки захвата, если камера занята или отключена, и может найти её заново по имени. |
+| Несколько камер | **Камера → Добавить камеру** поддерживает до четырёх камер суммарно. Поставьте вторую под углом примерно 45–90° к первой, чтобы зоны обзора пересекались. Во время трекинга двигайтесь так, чтобы камеры видели вас целиком, без посторонних в кадре. Программа автоматически уточняет взаимный поворот камер. Для ручного режима есть **Калибровка камер (8 с)**. Карточка камеры показывает число дополнительных потоков, участвующих в 3D-слиянии. Телефон можно подключить как веб-камеру через DroidCam, Iriun или Camo. |
+| Модели тела | В разделе **Производительность** доступны MediaPipe Pose Lite, Full и Heavy. Режим **Одна модель / RTMPose** позволяет подключить RTMPose-m или RTMPose-x. В ансамбль можно добавить к MediaPipe до четырёх ONNX-моделей из каталога RTMPose-m, RTMPose-x, MoveNet Lightning, MoveNet Thunder, RTMO-m и ViTPose-S WholeBody. |
+| Загрузка моделей и скорость | Откройте **Производительность → Модели: скачать заранее**, отметьте нужные модели и нажмите **Скачать выбранные**. Затем в блоке **Ансамбль моделей** выберите автоматический или ручной режим. Авто подбирает скачанные модели по запасу памяти и времени обработки кадра. Ручной выбор может снизить FPS обработки. MediaPipe даёт глубину, дополнительные модели уточняют 2D-координаты суставов, если их оценки согласуются. Активные модели и время обработки видны в карточке **Нейросеть**. В Windows MediaPipe работает на процессоре, а ONNX Runtime может использовать DirectML. CUDA доступна с совместимым пакетом ONNX Runtime. В одном окружении нужен один пакет ONNX Runtime. |
+| Выбор человека | **Человек в кадре** позволяет закрепить трекинг за одним человеком, ограничить число кандидатов и настроить переключение на единственного человека в кадре. Признаки положения, позы и внешнего вида обрабатываются в памяти. Предпросмотр и уверенность трекеров показывают, когда часть тела перекрыта или человек потерян. |
+| Плавность и движение | В разделе **Плавность и реализм** настраиваются интерполяция, частота отправки (по умолчанию 90 Гц), предсказание, сглаживание по частям тела, плавность поворота, коррекция перепутанных ног, ограничения суставов, оценка скрытых ног и переходы между позами стоя, сидя и лёжа. В разделе **Игра и вывод** есть оценка перемещения по кадру для режимов без привязки к настоящему шлему. |
+| Точность и размеры тела | В разделе **Точность** можно зафиксировать длину костей и положение стоп, ограничить движение ниже пола и настроить пороги видимости, фильтр One Euro и время удержания позы при потере трекинга. В разделе **Тело и калибровка** настраиваются рост, масштаб, поворот и смещения. |
+| Руки и пальцы | В разделе **Пальцы** включается отдельная модель MediaPipe для рук. Результат можно показывать в приложении или передавать в SteamVR. Драйвер может создавать контроллеры в стиле Index со скелетом пальцев и жестами курка и хвата. Настраиваются частота распознавания и сглаживание. |
+| Профили | В разделе **Профили** можно сохранить настройки под игру, аватар или человека, включая калибровку, трекеры и сглаживание. Профили переключаются на верхней панели или клавишами `Ctrl+1`–`Ctrl+9`. |
+| Запись и повтор | **Запись** сохраняет числовые координаты позы в локальный файл. В разделе **Запись и повтор** можно воспроизвести запись вместо видео с камеры, подобрать по ней настройки сглаживания или удалить её. |
+
+### Сборка, тесты и диагностика
+
+**Драйвер для Windows.** Установите Visual Studio Build Tools с компонентом **Разработка классических приложений на C++** и запустите `.\build_driver.bat`. Скрипт собирает драйвер и запускает тесты C++.
+
+**Драйвер для Linux.** Нужны CMake 3.16 или новее и компилятор C++17. Текущий `build_driver.sh` может завершиться на первом обновлении индикатора прогресса. Соберите драйвер напрямую из корня проекта:
+
+```bash
+cmake -S driver -B driver/build -DCMAKE_BUILD_TYPE=Release
+cmake --build driver/build --parallel
+(cd driver/build && ctest --output-on-failure)
+```
+
+CMake помещает библиотеку и ресурсы в `driver/dist/nexovarapose/`. Тесты C++ проверяют UDP-протокол и работу драйвера в имитации SteamVR. Для сборки Windows-приложения запустите `.\build_exe.bat` после установки зависимостей. Результат — `dist\Nexovara Pose\Nexovara Pose.exe` и соседние файлы, которые нужно хранить вместе. Драйвер собирается отдельно.
+
+**Тесты Python.** Запускайте из корня проекта после установки. Для части тестов нужны дополнительные зависимости ONNX Runtime и OSCQuery. Тестам с искусственной ONNX-моделью также нужен `onnx`.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pytest python-osc onnx
+.\.venv\Scripts\python.exe -m pytest tests
+```
+
+```bash
+.venv/bin/python -m pip install pytest python-osc onnx
+.venv/bin/python -m pytest tests
+```
+
+| Проблема | Что проверить |
+| --- | --- |
+| Камера открывается, но кадров нет | Закройте другие программы, которые используют камеру, выберите её заново в разделе **Камера** и попробуйте снизить разрешение или частоту кадров. |
+| Трекинг запаздывает или стопы смещаются | Проверьте FPS камеры, свет, видимость тела и время обработки моделей. Попробуйте MediaPipe Lite или меньше ONNX-моделей. Начните с таза и стоп, откалибруйтесь заново. Если проблема с глубиной, попробуйте вторую камеру. |
+| SteamVR не показывает трекеры | Откройте **Проверка и настройка SteamVR…** и проверьте сборку, регистрацию, загрузку драйвера и приём данных. Затем проверьте роли и калибровку в игре. |
+| VRChat не видит OSC-трекеры | Проверьте режим VR, OSC и порт. Чтобы посмотреть локальные пакеты, закройте VRChat, выберите **Тест без игр** и запустите `.\osc_monitor.bat` или `bash osc_monitor.sh`. |
+| Установка или запуск завершаются ошибкой | В Windows используйте `.\selfcheck.bat` и `.\run_debug.bat`. В Linux/macOS запустите `.venv/bin/python -I tools/selfcheck.py` и проверьте вывод терминала. В приложении **Конфиденциальность → Открыть папку** открывает данные и журналы. |
+
+### Структура проекта
+
+Приложение на Python получает кадры, оценивает позу, объединяет данные камер и применяет калибровку и фильтры. Отдельный поток отправляет позы трекеров через локальный OSC или в драйвер OpenVR на C++. Драйвер регистрирует виртуальные устройства в SteamVR.
+
+| Путь | Назначение |
+| --- | --- |
+| [`main.py`](main.py), [`fbt/ui/`](fbt/ui/) | Запуск Qt, предпросмотр, мастер настройки, параметры, загрузка моделей и диагностика SteamVR |
+| [`fbt/camera.py`](fbt/camera.py), [`fbt/multicam.py`](fbt/multicam.py), [`fbt/engine.py`](fbt/engine.py) | Захват, калибровка и слияние камер, конвейер трекинга |
+| [`fbt/model_catalog.py`](fbt/model_catalog.py), [`fbt/pose.py`](fbt/pose.py), [`fbt/onnx_pose.py`](fbt/onnx_pose.py), [`fbt/rtmpose.py`](fbt/rtmpose.py), [`fbt/ensemble.py`](fbt/ensemble.py), [`fbt/hands.py`](fbt/hands.py) | Каталог, инференс MediaPipe и ONNX, слияние координат и трекинг пальцев |
+| [`fbt/person.py`](fbt/person.py), [`fbt/skeleton.py`](fbt/skeleton.py), [`fbt/filters.py`](fbt/filters.py), [`fbt/realism.py`](fbt/realism.py), [`fbt/guidance.py`](fbt/guidance.py) | Выбор человека, калибровка скелета, фильтры, ограничения поз и подсказки |
+| [`fbt/sender.py`](fbt/sender.py), [`fbt/outputs.py`](fbt/outputs.py), [`fbt/hmd.py`](fbt/hmd.py), [`fbt/oscquery.py`](fbt/oscquery.py), [`fbt/steamvr.py`](fbt/steamvr.py), [`fbt/controls.py`](fbt/controls.py) | Частота отправки, пакеты OSC и драйвера, привязка к шлему, регистрация SteamVR и управление |
+| [`fbt/config.py`](fbt/config.py), [`fbt/profiles.py`](fbt/profiles.py), [`fbt/recording.py`](fbt/recording.py), [`fbt/autotune.py`](fbt/autotune.py) | Локальные настройки, профили, записи позы и подбор параметров |
+| [`fbt/presets.py`](fbt/presets.py), [`fbt/system.py`](fbt/system.py), [`fbt/mathutil.py`](fbt/mathutil.py), [`fbt/net.py`](fbt/net.py), [`fbt/osc.py`](fbt/osc.py) | Режимы вывода, системный таймер, 3D-математика, загрузка моделей и кодирование OSC |
+| [`driver/src/`](driver/src/), [`driver/nexovarapose/`](driver/nexovarapose/), [`driver/third_party/`](driver/third_party/) | Драйвер OpenVR на C++, его манифест и ресурсы, включённый код Valve |
+| [`tests/`](tests/), [`driver/tests/`](driver/tests/), [`tools/`](tools/), [`models/README.txt`](models/README.txt) | Тесты Python и C++, инструменты установки и диагностики, ручная загрузка базовых моделей |
+
+### Локальные данные, ограничения и лицензия
+
+Кадры камеры обрабатываются локально. Запись сохраняет числовые данные позы, а пакеты трекеров отправляются на `127.0.0.1`. Если включён OSCQuery, он публикует объявление службы через mDNS для обнаружения. При установке скачиваются пакеты Python, а приложение при необходимости загружает файлы моделей по HTTPS. Настройки SteamVR меняются по команде пользователя при закрытом SteamVR и с резервным копированием.
+
+Если рядом с проектом или исполняемым файлом лежит `portable.txt`, настройки, записи и журналы хранятся в `data/`. Без этого файла используются `%APPDATA%\Nexovara Pose` в Windows, `${XDG_CONFIG_HOME:-~/.config}/Nexovara Pose` в Linux или `~/Library/Application Support/Nexovara Pose` в macOS. Модели могут лежать в `models/` проекта или в папке данных. В разделе **Конфиденциальность** можно открыть папку, очистить журналы или сбросить личные настройки и записи с сохранением весов моделей.
+
+Это бета-версия. Одна камера оценивает глубину приблизительно. Точность падает, когда тело частично перекрыто, вы поворачиваетесь боком или в комнате мало света. Дополнительные камеры и модели требуют больше ресурсов. Частота отправки трекеров и фактический FPS камеры и инференса измеряются отдельно. Совместимость зависит от оборудования, версии SteamVR и игры. Если нашли проблему, откройте [Issue](https://github.com/FrizeTV/Nexovara-Pose/issues) и приложите версию ОС, схему камер, режим вывода, шаги воспроизведения и относящиеся к проблеме строки журнала.
+
+Собственный код проекта распространяется по [лицензии MIT](LICENSE). Лицензии зависимостей и условия использования моделей описаны в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Лицензии Valve лежат отдельно для [OpenVR](driver/third_party/openvr/LICENSE) и [примеров кода](driver/third_party/valve/LICENSE).
